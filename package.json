@@ -1,0 +1,25 @@
+{
+  "name": "certifier",
+  "version": "0.1.0",
+  "description": "Get and verify certificates",
+  "main": "app.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/homegamesio/certifier.git"
+  },
+  "keywords": [
+    "certifier"
+  ],
+  "author": "Joseph Garcia",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/homegamesio/certifier/issues"
+  },
+  "homepage": "https://github.com/homegamesio/certifier#readme",
+  "dependencies": {
+    "aws-sdk": "^2.798.0"
+  }
+}
