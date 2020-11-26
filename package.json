@@ -20,6 +20,7 @@
   },
   "homepage": "https://github.com/homegamesio/certifier#readme",
   "dependencies": {
+    "archiver": "^5.1.0",
     "aws-sdk": "^2.798.0"
   }
 }
