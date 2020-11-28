@@ -20,9 +20,6 @@ const updateUserCert = (username, certArn) => new Promise((resolve, reject) => {
     };
     
     provider.adminUpdateUserAttributes(params, (err, data) => {
-        console.log("updated user attributes");
-        console.log(err);
-        console.log(data);
         resolve();
     });
 });
@@ -35,11 +32,7 @@ const createRecords = (arn) => new Promise((resolve, reject) => {
     const acm = new AWS.ACM({region: config.aws.region});
     
     acm.describeCertificate(params, (err, data) => {
-        console.log(err);
-        console.log(data);
         const dnsChallenge = data.Certificate.DomainValidationOptions.find((c) => {
-            console.log("C");
-            console.log(c);
             return c.ResourceRecord.Type === 'CNAME'
         });
 
@@ -72,11 +65,8 @@ const createRecords = (arn) => new Promise((resolve, reject) => {
                 Id: data.ChangeInfo.Id
             };
 
-            console.log("waiting for that to be complete");
-
             route53.waitFor('resourceRecordSetsChanged', params, (err, data) => {
                 if (data.ChangeInfo.Status === 'INSYNC') {
-                    console.log('done! deleting record');
                     const deleteDnsParams = {
                         ChangeBatch: {
                             Changes: [
@@ -104,11 +94,8 @@ const createRecords = (arn) => new Promise((resolve, reject) => {
                             Id: data.ChangeInfo.Id
                         };
 
-                        console.log("waiting for THAT to be complete");
-    
                         route53.waitFor('resourceRecordSetsChanged', params, (err, data) => {
                             if (data.ChangeInfo.Status === 'INSYNC') {
-                                console.log('done! deleted record!!!');
                                 resolve();
                             }
                         });
@@ -150,7 +137,6 @@ const getCertArn = (accessToken) => new Promise((resolve, reject) => {
 });
 
 const generateCert = (username) => new Promise((resolve, reject) => {
-    console.log("need to generate new one for " + username);
     const params = {
         DomainName: '*.' + username + '.homegames.link',
 //        IdempotencyToken: 'abcd123',
@@ -160,7 +146,6 @@ const generateCert = (username) => new Promise((resolve, reject) => {
     const acm = new AWS.ACM({region: config.aws.region});
 
     acm.requestCertificate(params, (err, data) => {
-        console.log(data);
         resolve(data);
     });
 });
@@ -247,12 +232,13 @@ const server = http.createServer((req, res) => {
                             res.writeHead(500);
                             res.end('error getting cert');
                         } else {
+                            console.log("DATA");
+                            console.log(data);
                             const privKey = data.Certificate;
                             const chain = data.CertificateChain; 
                             
                             const Archiver = require('archiver');
                             
-                            console.log("wat");
                             res.writeHead(200, {
                                 'Content-Type': 'application/zip',
                                 'Content-Disposition': 'attachment; filename=certs.zip'
@@ -289,10 +275,6 @@ const server = http.createServer((req, res) => {
                                             } else {
                                                 const privKey = data.Certificate;
                                                 const chain = data.CertificateChain; 
-//                                                res.end(JSON.stringify({
-  //                                                  privKey,
-    //                                                chain
-      //                                          }));
                                             }
 
                                         });
@@ -306,7 +288,7 @@ const server = http.createServer((req, res) => {
                 res.writeHead(400, {
                     'Content-Type': 'text/plain'
                 });
-                console.log(err);
+
                 res.end('Could not validate auth header');
             });
 
