@@ -16,10 +16,10 @@ const updateUserCert = (username, certArn) => new Promise((resolve, reject) => {
     const provider = new AWS.CognitoIdentityServiceProvider({region: config.aws.region});
     const params = {
         UserAttributes: [
-            {
-                Name: 'custom:certArn',
-                Value: certArn
-            }
+        {
+            Name: 'custom:certArn',
+            Value: certArn
+        }
         ],
         UserPoolId: config.aws.cognito.USER_POOL_ID,
         Username: username
@@ -30,68 +30,79 @@ const updateUserCert = (username, certArn) => new Promise((resolve, reject) => {
     });
 });
 
-const generateCert2 = (username) => new Promise((resolve, reject) => {
+const generateCert = (username) => new Promise((resolve, reject) => {
     console.log("generating cert for " + username);
 
-	const { spawn } = require('child_process');
-	const cmd = 'certbot';
-	const args = ['certonly', '--dry-run', '--manual', '--preferred-challenges=dns', '-d *.' + username + '.homegames.link', '--email=joseph@homegamesio'];
+    const { spawn } = require('child_process');
+    const cmd = 'certbot';
+    const args = ['certonly', '--dry-run', '--manual', '--preferred-challenges=dns', '-d *.' + username + '.homegames.link', '--email=joseph@homegamesio'];
 
-        const child = spawn(cmd, args);
-	let lineIsChallenge = false;
-		child.stdout.on('data', (chunk) => {
-			console.log('chunk');
+    const child = spawn(cmd, args);
+    child.stdout.on('data', (chunk) => {
+	    console.log(chunk.toString());
+     const usernameChallengeUrl = `_acme-challenge.${username}.homegames.link`;
+     if (chunk.toString().indexOf('(Y)es/(N)o:') == 0) {
+        child.stdin.write('y\n');
+    } else if (chunk.toString().indexOf('(A)gree/(C)ancel:') == 0) {
+        child.stdin.write('A\n');
+    } else if (chunk.toString().indexOf(usernameChallengeUrl) >= 0) {
+        const dnsRegEx = new RegExp('\n\n(.*)\n\n');
+
+        const dnsMatch = chunk.toString().match(dnsRegEx);
+        if (dnsMatch) {
+           const dnsChallenge = dnsMatch[1];
+	   console.log('creating new DNS record for user.')
+           createDNSRecord(usernameChallengeUrl, dnsChallenge).then(() => {
+              child.stdin.write('\n');
+              console.log('created. now deleting');
+              deleteDNSRecord(usernameChallengeUrl).then(() => {
+		  console.log('deleted record!');
+		      resolve('/would/be/path');
+              });
+
+          }).catch(err => {
+              if (err.toString().indexOf('but it already exists') >= 0) {
+		  console.log('already has a dns record. deleting it.');
+                  deleteDNSRecord(usernameChallengeUrl).then(() => {
+	              console.log('deleted that. now need to create one');
+           	      createDNSRecord(usernameChallengeUrl, dnsChallenge).then(() => {
+                          child.stdin.write('\n');
+                          console.log('created2. now deleting');
+                          deleteDNSRecord(usernameChallengeUrl).then(() => {
+             		      console.log('deleted2 record!');
+				  resolve('/would/be/path');
+                          });
+                      });
+                  });
+              }
+          });
+      }
+  }
+});
+    child.stderr.on('data', (chunk) => {
+			//console.log('error!!!');
 			console.log(chunk.toString());
-			const usernameChallengeUrl = `_acme-challenge.${username}.homegames.link`;
-			if (chunk.toString().indexOf('(Y)es/(N)o:') == 0) {
-				child.stdin.write('y\n');
-			} else if (chunk.toString().indexOf('(A)gree/(C)ancel:') == 0) {
-				child.stdin.write('A\n');
-			} else if (chunk.toString().indexOf(usernameChallengeUrl) >= 0) {
-				const dnsRegEx = new RegExp('\n\n(.*)\n\n');
-
-				const dnsMatch = chunk.toString().match(dnsRegEx);
-				if (dnsMatch) {
-					const dnsChallenge = dnsMatch[1];
-					console.log('need to create a dns record at ' + usernameChallengeUrl + ' for ' + dnsChallenge);
-					createDNSRecord(usernameChallengeUrl, dnsChallenge).then(() => {
-						child.stdin.write('\n');
-						deleteDNSRecord(usernameChallengeUrl, dnsChallenge).then(() => {
-							console.log('deleted that!!!');
-						});
-
-					}).catch(err => {
-						if (err.toString().indexOf('but it already exists') >= 0) {
-						    getDNSRecord(usernameChallengeUrl).then((value) => {
-    						        deleteDNSRecord(usernameChallengeUrl, value).then(() => {
-						            console.log("DELETED THAT COOL");	
-						        });
-						    });
-						}
-					});
-				}
-			}
-		});
-		child.stderr.on('data', (chunk) => {
-			console.log('error!!!');
-			console.log(chunk.toString());
 		});
 
-		child.on('error', (err) => {
-			console.log('error');
-			console.log(err);
-			console.log(err.toString());
+    child.on('error', (err) => {
+			//console.log('error');
+			//console.log(err);
+			//console.log(err.toString());
 		});
 
-		child.on('exit', (code) => {
-			console.log('exited with code ' + code);
-		});
+    child.on('exit', (code) => {
+     console.log('exited with code ' + code);
+ });
 });
 
-const deleteDNSRecord = (name, value) => new Promise((resolve, reject) => {
-    const deleteDnsParams = {
-        ChangeBatch: {
-            Changes: [
+generateCert('prosif');
+
+const deleteDNSRecord = (name) => new Promise((resolve, reject) => {
+   
+	getDNSRecord(name).then((value) => {
+        const deleteDnsParams = {
+            ChangeBatch: {
+                Changes: [
                 {
                     Action: 'DELETE',
                     ResourceRecordSet: {
@@ -99,105 +110,95 @@ const deleteDNSRecord = (name, value) => new Promise((resolve, reject) => {
                         Type: 'TXT',
                         TTL: 300,
                         ResourceRecords: [
-                            {
+                        {
                                 Value: value,//dnsChallengeRecord.Value
                             }
-                        ]
+                            ]
 //                        TTL: 300,
 //                        Type: dnsChallengeRecord.Type
-                    }
-                }
-            ]
-        },
-        HostedZoneId: config.aws.route53.hostedZoneId
+}
+}
+]
+},
+HostedZoneId: config.aws.route53.hostedZoneId
+};
+
+const route53 = new AWS.Route53();
+route53.changeResourceRecordSets(deleteDnsParams, (err, data) => {
+    const deleteParams = {
+        Id: data.ChangeInfo.Id
     };
-    
-	console.log('deleting');
-        const route53 = new AWS.Route53();
-    route53.changeResourceRecordSets(deleteDnsParams, (err, data) => {
-	    console.log("DADASDAS");
-	    console.log(err);
-	    console.log(data);
 
-        const deleteParams = {
-            Id: data.ChangeInfo.Id
-        };
-
-	    console.log('waiting for deletion');
-        route53.waitFor('resourceRecordSetsChanged', deleteParams, (err, data) => {
-		console.log('sdfsdf');
-		console.log(err);
-		console.log(data);
-            if (data.ChangeInfo.Status === 'INSYNC') {
-                resolve();
-            }
-        });
-
+    route53.waitFor('resourceRecordSetsChanged', deleteParams, (err, data) => {
+        if (data.ChangeInfo.Status === 'INSYNC') {
+            resolve();
+        }
     });
+
+});
+});
 
 });
 
 const getDNSRecord = (url) => new Promise((resolve, reject) => {
     const params = {
         HostedZoneId: config.aws.route53.hostedZoneId,
-	StartRecordName: url,
-	StartRecordType: 'TXT'
+        StartRecordName: url,
+        StartRecordType: 'TXT'
     };
 
     const route53 = new AWS.Route53();
     route53.listResourceRecordSets(params, (err, data) => {
-	    for (const i in data.ResourceRecordSets) {
-		    const entry = data.ResourceRecordSets[i];
-		    if (entry.Name === url + '.') {
-      			    resolve(entry.ResourceRecords[0].Value);
-		    }
-	    }
-	reject();
-    });
+       for (const i in data.ResourceRecordSets) {
+          const entry = data.ResourceRecordSets[i];
+          if (entry.Name === url + '.') {
+           resolve(entry.ResourceRecords[0].Value);
+       }
+   }
+   reject();
+});
 
 });
 
 const createDNSRecord = (url, value) => new Promise((resolve, reject) => {
-        const dnsParams = {
-            ChangeBatch: {
-                Changes: [
+    const dnsParams = {
+        ChangeBatch: {
+            Changes: [
+            {
+                Action: 'CREATE',
+                ResourceRecordSet: {
+                    Name: url,
+                    ResourceRecords: [
                     {
-                        Action: 'CREATE',
-                        ResourceRecordSet: {
-                            Name: url,
-                            ResourceRecords: [
-                                {
-                                    Value: '"' + value + '"'
-                                }
-                            ],
-                            TTL: 300,
-                            Type: 'TXT'
-                        }
+                        Value: '"' + value + '"'
                     }
-                ]
-            },
-            HostedZoneId: config.aws.route53.hostedZoneId
-        };
+                    ],
+                    TTL: 300,
+                    Type: 'TXT'
+                }
+            }
+            ]
+        },
+        HostedZoneId: config.aws.route53.hostedZoneId
+    };
 
-        const route53 = new AWS.Route53();
-        route53.changeResourceRecordSets(dnsParams, (err, data) => {
-		if (err) {
-		    reject(err);
-		} else {
-	            const params = {
-                        Id: data.ChangeInfo.Id
-                    };
+    const route53 = new AWS.Route53();
+    route53.changeResourceRecordSets(dnsParams, (err, data) => {
+      if (err) {
+          reject(err);
+      } else {
+       const params = {
+        Id: data.ChangeInfo.Id
+    };
 
-	            console.log('waiting for creation');
-
-                    route53.waitFor('resourceRecordSetsChanged', params, (err, data) => {
-                        if (data.ChangeInfo.Status === 'INSYNC') {
-			    resolve();
-                        }
-                    });
-		}
-        });
- 
+    route53.waitFor('resourceRecordSetsChanged', params, (err, data) => {
+        if (data.ChangeInfo.Status === 'INSYNC') {
+         resolve();
+     }
+ });
+}
+});
+    
 });
 
 const getCertArn = (accessToken) => new Promise((resolve, reject) => {
@@ -227,20 +228,6 @@ const getCertArn = (accessToken) => new Promise((resolve, reject) => {
 
 });
 
-const generateCert = (username) => new Promise((resolve, reject) => {
-    const params = {
-        DomainName: '*.' + username + '.homegames.link',
-//        IdempotencyToken: 'abcd123',
-        ValidationMethod: 'DNS'
-    };
-
-    const acm = new AWS.ACM({region: config.aws.region});
-
-    acm.requestCertificate(params, (err, data) => {
-        resolve(data);
-    });
-});
-
 const decodeJwt = (token) => new Promise((resolve, reject) => {
     const lambda = new AWS.Lambda({
         region: config.aws.region
@@ -254,6 +241,8 @@ const decodeJwt = (token) => new Promise((resolve, reject) => {
     };
 
     lambda.invoke(params, (err, data) => {
+	    console.log(err);
+	    console.log(data);
         if (data.Payload === 'false') {
             reject('invalid JWT');
         } else if (err) {
@@ -286,7 +275,7 @@ const verifyAuthToken = (req) => new Promise((resolve, reject) => {
             reject('JWT username does not match provided username');
         }
     }).catch(err => {
-            reject('Could not verify auth token');
+        reject('Could not verify auth token');
     });
 });
 
@@ -322,8 +311,6 @@ const server = https.createServer(options, (req, res) => {
                             res.writeHead(500);
                             res.end('error getting cert');
                         } else {
-                            console.log("DATA");
-                            console.log(data);
                             const privKey = data.Certificate;
                             const chain = data.CertificateChain; 
                             
@@ -339,8 +326,8 @@ const server = https.createServer(options, (req, res) => {
                             zip.pipe(res);
 
                             zip.append(privKey, { name: 'certs/privkey.pem' })
-                                .append(chain, { name: 'certs/fullchain.pem' })
-                                .finalize();
+                            .append(chain, { name: 'certs/fullchain.pem' })
+                            .finalize();
                         }
                     });
                 }).catch(err => {
