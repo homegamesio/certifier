@@ -1,10 +1,16 @@
 const https = require('https');
 const http = require('http');
 const config = require('./config');
+const fs = require('fs');
 const AWS = require('aws-sdk');
 
 const HTTP_PORT = 80;
 const HTTPS_PORT = 443;
+
+const options = {
+	key: fs.readFileSync(config.TLS_KEY_PATH),
+	cert: fs.readFileSync(config.TLS_CERT_PATH)
+}
 
 const updateUserCert = (username, certArn) => new Promise((resolve, reject) => {
     const provider = new AWS.CognitoIdentityServiceProvider({region: config.aws.region});
@@ -24,33 +30,148 @@ const updateUserCert = (username, certArn) => new Promise((resolve, reject) => {
     });
 });
 
-const createRecords = (arn) => new Promise((resolve, reject) => {
-    const params = {
-        CertificateArn: arn
+const generateCert2 = (username) => new Promise((resolve, reject) => {
+    console.log("generating cert for " + username);
+
+	const { spawn } = require('child_process');
+	const cmd = 'certbot';
+	const args = ['certonly', '--dry-run', '--manual', '--preferred-challenges=dns', '-d *.' + username + '.homegames.link', '--email=joseph@homegamesio'];
+
+        const child = spawn(cmd, args);
+	let lineIsChallenge = false;
+		child.stdout.on('data', (chunk) => {
+			console.log('chunk');
+			console.log(chunk.toString());
+			const usernameChallengeUrl = `_acme-challenge.${username}.homegames.link`;
+			if (chunk.toString().indexOf('(Y)es/(N)o:') == 0) {
+				child.stdin.write('y\n');
+			} else if (chunk.toString().indexOf('(A)gree/(C)ancel:') == 0) {
+				child.stdin.write('A\n');
+			} else if (chunk.toString().indexOf(usernameChallengeUrl) >= 0) {
+				const dnsRegEx = new RegExp('\n\n(.*)\n\n');
+
+				const dnsMatch = chunk.toString().match(dnsRegEx);
+				if (dnsMatch) {
+					const dnsChallenge = dnsMatch[1];
+					console.log('need to create a dns record at ' + usernameChallengeUrl + ' for ' + dnsChallenge);
+					createDNSRecord(usernameChallengeUrl, dnsChallenge).then(() => {
+						child.stdin.write('\n');
+						deleteDNSRecord(usernameChallengeUrl, dnsChallenge).then(() => {
+							console.log('deleted that!!!');
+						});
+
+					}).catch(err => {
+						if (err.toString().indexOf('but it already exists') >= 0) {
+						    getDNSRecord(usernameChallengeUrl).then((value) => {
+    						        deleteDNSRecord(usernameChallengeUrl, value).then(() => {
+						            console.log("DELETED THAT COOL");	
+						        });
+						    });
+						}
+					});
+				}
+			}
+		});
+		child.stderr.on('data', (chunk) => {
+			console.log('error!!!');
+			console.log(chunk.toString());
+		});
+
+		child.on('error', (err) => {
+			console.log('error');
+			console.log(err);
+			console.log(err.toString());
+		});
+
+		child.on('exit', (code) => {
+			console.log('exited with code ' + code);
+		});
+});
+
+const deleteDNSRecord = (name, value) => new Promise((resolve, reject) => {
+    const deleteDnsParams = {
+        ChangeBatch: {
+            Changes: [
+                {
+                    Action: 'DELETE',
+                    ResourceRecordSet: {
+                        Name: name,//dnsChallengeRecord.Name,
+                        Type: 'TXT',
+                        TTL: 300,
+                        ResourceRecords: [
+                            {
+                                Value: value,//dnsChallengeRecord.Value
+                            }
+                        ]
+//                        TTL: 300,
+//                        Type: dnsChallengeRecord.Type
+                    }
+                }
+            ]
+        },
+        HostedZoneId: config.aws.route53.hostedZoneId
     };
     
-    const acm = new AWS.ACM({region: config.aws.region});
-    
-    acm.describeCertificate(params, (err, data) => {
-        const dnsChallenge = data.Certificate.DomainValidationOptions.find((c) => {
-            return c.ResourceRecord.Type === 'CNAME'
+	console.log('deleting');
+        const route53 = new AWS.Route53();
+    route53.changeResourceRecordSets(deleteDnsParams, (err, data) => {
+	    console.log("DADASDAS");
+	    console.log(err);
+	    console.log(data);
+
+        const deleteParams = {
+            Id: data.ChangeInfo.Id
+        };
+
+	    console.log('waiting for deletion');
+        route53.waitFor('resourceRecordSetsChanged', deleteParams, (err, data) => {
+		console.log('sdfsdf');
+		console.log(err);
+		console.log(data);
+            if (data.ChangeInfo.Status === 'INSYNC') {
+                resolve();
+            }
         });
 
-        const dnsChallengeRecord = dnsChallenge.ResourceRecord;
+    });
+
+});
+
+const getDNSRecord = (url) => new Promise((resolve, reject) => {
+    const params = {
+        HostedZoneId: config.aws.route53.hostedZoneId,
+	StartRecordName: url,
+	StartRecordType: 'TXT'
+    };
+
+    const route53 = new AWS.Route53();
+    route53.listResourceRecordSets(params, (err, data) => {
+	    for (const i in data.ResourceRecordSets) {
+		    const entry = data.ResourceRecordSets[i];
+		    if (entry.Name === url + '.') {
+      			    resolve(entry.ResourceRecords[0].Value);
+		    }
+	    }
+	reject();
+    });
+
+});
+
+const createDNSRecord = (url, value) => new Promise((resolve, reject) => {
         const dnsParams = {
             ChangeBatch: {
                 Changes: [
                     {
                         Action: 'CREATE',
                         ResourceRecordSet: {
-                            Name: dnsChallengeRecord.Name,
+                            Name: url,
                             ResourceRecords: [
                                 {
-                                    Value: dnsChallengeRecord.Value
+                                    Value: '"' + value + '"'
                                 }
                             ],
                             TTL: 300,
-                            Type: dnsChallengeRecord.Type
+                            Type: 'TXT'
                         }
                     }
                 ]
@@ -60,54 +181,24 @@ const createRecords = (arn) => new Promise((resolve, reject) => {
 
         const route53 = new AWS.Route53();
         route53.changeResourceRecordSets(dnsParams, (err, data) => {
-
-            const params = {
-                Id: data.ChangeInfo.Id
-            };
-
-            route53.waitFor('resourceRecordSetsChanged', params, (err, data) => {
-                if (data.ChangeInfo.Status === 'INSYNC') {
-                    const deleteDnsParams = {
-                        ChangeBatch: {
-                            Changes: [
-                                {
-                                    Action: 'DELETE',
-                                    ResourceRecordSet: {
-                                        Name: dnsChallengeRecord.Name,
-                                        ResourceRecords: [
-                                            {
-                                                Value: dnsChallengeRecord.Value
-                                            }
-                                        ],
-                                        TTL: 300,
-                                        Type: dnsChallengeRecord.Type
-                                    }
-                                }
-                            ]
-                        },
-                        HostedZoneId: config.aws.route53.hostedZoneId
+		if (err) {
+		    reject(err);
+		} else {
+	            const params = {
+                        Id: data.ChangeInfo.Id
                     };
-                    
-                    route53.changeResourceRecordSets(deleteDnsParams, (err, data) => {
 
-                        const deleteParams = {
-                            Id: data.ChangeInfo.Id
-                        };
+	            console.log('waiting for creation');
 
-                        route53.waitFor('resourceRecordSetsChanged', params, (err, data) => {
-                            if (data.ChangeInfo.Status === 'INSYNC') {
-                                resolve();
-                            }
-                        });
- 
+                    route53.waitFor('resourceRecordSetsChanged', params, (err, data) => {
+                        if (data.ChangeInfo.Status === 'INSYNC') {
+			    resolve();
+                        }
                     });
-                }
-            });
+		}
         });
-    });
+ 
 });
-
-
 
 const getCertArn = (accessToken) => new Promise((resolve, reject) => {
 
@@ -199,7 +290,7 @@ const verifyAuthToken = (req) => new Promise((resolve, reject) => {
     });
 });
 
-const server = http.createServer((req, res) => {
+const server = https.createServer(options, (req, res) => {
     if (req.method === 'GET') {
         if (req.url === '/verify') {
             verifyAuthToken(req).then(() => {
@@ -215,7 +306,6 @@ const server = http.createServer((req, res) => {
                 res.end('Could not validate auth header');
             });
         } else if (req.url === '/') {
-
             verifyAuthToken(req).then(() => {
 
                 const authToken = req.headers['access-token'];
@@ -307,9 +397,10 @@ const server = http.createServer((req, res) => {
 
 });
 
-server.listen(80);
+server.listen(HTTPS_PORT);
 
-//http.createServer((req, res) => {
-//    res.writeHead(301, {'Location': 'https://' + req.headers['host'] + req.url });
-//    res.end();
-//}).listen(HTTP_PORT);
+http.createServer((req, res) => {
+    res.writeHead(301, {'Location': 'https://' + req.headers['host'] + req.url });
+    res.end();
+}).listen(HTTP_PORT);
+
