@@ -3,6 +3,9 @@ const http = require('http');
 const config = require('./config');
 const fs = require('fs');
 const AWS = require('aws-sdk');
+const crypto = require('crypto');
+const { spawn } = require('child_process');
+const zlib = require('zlib');
 
 const HTTP_PORT = 80;
 const HTTPS_PORT = 443;
@@ -11,6 +14,10 @@ const options = {
 	key: fs.readFileSync(config.TLS_KEY_PATH),
 	cert: fs.readFileSync(config.TLS_CERT_PATH)
 }
+
+const getUserHash = (username) => {
+	return crypto.createHash('md5').update(username).digest('hex');
+};
 
 const updateUserCert = (username, certArn) => new Promise((resolve, reject) => {
     const provider = new AWS.CognitoIdentityServiceProvider({region: config.aws.region});
@@ -33,18 +40,38 @@ const updateUserCert = (username, certArn) => new Promise((resolve, reject) => {
 const generateCert = (username) => new Promise((resolve, reject) => {
     console.log("generating cert for " + username);
 
-    const { spawn } = require('child_process');
+    const userHash = getUserHash(username);
+
     const cmd = 'certbot';
-    const args = ['certonly', '--dry-run', '--manual', '--preferred-challenges=dns', '-d *.' + username + '.homegames.link', '--email=joseph@homegamesio'];
+
+    const baseArgs = ['certonly'];
+
+    if (config.ENVIRONMENT !== 'production') {
+	baseArgs.push('--dry-run');
+    }
+
+    const additionalArgs = ['--manual', '--preferred-challenges=dns', '-d *.' + userHash + '.homegames.link', '--email=robot@homegamesio'];
+
+    const args = [baseArgs, additionalArgs].flat();
 
     const child = spawn(cmd, args);
     child.stdout.on('data', (chunk) => {
 	    console.log(chunk.toString());
-     const usernameChallengeUrl = `_acme-challenge.${username}.homegames.link`;
+     const usernameChallengeUrl = `_acme-challenge.${userHash}.homegames.link`;
      if (chunk.toString().indexOf('(Y)es/(N)o:') == 0) {
         child.stdin.write('y\n');
     } else if (chunk.toString().indexOf('(A)gree/(C)ancel:') == 0) {
         child.stdin.write('A\n');
+    } else if (chunk.toString().indexOf(' - Congratulations! Your certificate and chain have been saved at:') >= 0) {
+	const outputPathRegEx = new RegExp('Your key file has been saved at:\n(.*)\n   ');
+	
+	const outputPathMatch = chunk.toString().match(outputPathRegEx);
+	
+	if (outputPathMatch) { 
+	    const outputPath = outputPathMatch[1].trim().split('/').filter(e => !e.endsWith('.pem')).join('/');;
+	    resolve(outputPath);
+	}
+
     } else if (chunk.toString().indexOf(usernameChallengeUrl) >= 0) {
         const dnsRegEx = new RegExp('\n\n(.*)\n\n');
 
@@ -57,7 +84,6 @@ const generateCert = (username) => new Promise((resolve, reject) => {
               console.log('created. now deleting');
               deleteDNSRecord(usernameChallengeUrl).then(() => {
 		  console.log('deleted record!');
-		      resolve('/would/be/path');
               });
 
           }).catch(err => {
@@ -79,23 +105,22 @@ const generateCert = (username) => new Promise((resolve, reject) => {
       }
   }
 });
-    child.stderr.on('data', (chunk) => {
-			//console.log('error!!!');
-			console.log(chunk.toString());
+    child.stderr.on('data', (_chunk) => {
+	    const chunk = _chunk.toString();
+			console.log('error!!!');
+			console.log(_chunk.toString());
 		});
 
     child.on('error', (err) => {
-			//console.log('error');
-			//console.log(err);
-			//console.log(err.toString());
+			console.log('error');
+			console.log(err);
+			console.log(err.toString());
 		});
 
     child.on('exit', (code) => {
      console.log('exited with code ' + code);
  });
 });
-
-generateCert('prosif');
 
 const deleteDNSRecord = (name) => new Promise((resolve, reject) => {
    
@@ -279,6 +304,22 @@ const verifyAuthToken = (req) => new Promise((resolve, reject) => {
     });
 });
 
+const getCert = (username) => new Promise((resolve, reject) => {
+	const s3 = new AWS.S3();
+	const params = {
+		Bucket: config.aws.s3.certBucket,
+		Key: `${config.aws.s3.certPrefix}${username}/certBundle.zip`
+	};
+
+	s3.getObject(params, (err, data) => {
+		if (err) {
+			reject();
+		} else {
+			resolve(data);
+		}
+	});
+});
+
 const server = https.createServer(options, (req, res) => {
     if (req.method === 'GET') {
         if (req.url === '/verify') {
@@ -294,73 +335,92 @@ const server = https.createServer(options, (req, res) => {
                 });
                 res.end('Could not validate auth header');
             });
-        } else if (req.url === '/') {
+        } else if (req.url === '/get-certs') {
+		console.log('sdfsdf');
             verifyAuthToken(req).then(() => {
 
                 const authToken = req.headers['access-token'];
                 const username = req.headers['hg-username'];
+
+	        getCert(username).then(() => {
+
+		}).catch((err) => {
+		    console.log('need to create cert for ' + username);	
+		    
+		    generateCert(username).then(certPath => {
+			console.log('created cert! at ' + certPath);
+			
+			storeCert(username, certPath).then((certData) => {
+				console.log("STORED CERTS AT THIS HOLE SHNIT");
+				console.log(certData);
+
+			});
+			//const storeCert = (username, certPaths) => new Promise((resolve, reject) => {
+
+		    });
+		});
                 
-                getCertArn(authToken).then((certArn) => {
-                    const params = {
-                        CertificateArn: certArn
-                    };
-
-                    const acm = new AWS.ACM({region: config.aws.region});
-                    acm.getCertificate(params, (err, data) => {
-                        if (err) {
-                            res.writeHead(500);
-                            res.end('error getting cert');
-                        } else {
-                            const privKey = data.Certificate;
-                            const chain = data.CertificateChain; 
-                            
-                            const Archiver = require('archiver');
-                            
-                            res.writeHead(200, {
-                                'Content-Type': 'application/zip',
-                                'Content-Disposition': 'attachment; filename=certs.zip'
-                            });
-
-                            const zip = Archiver('zip');
-
-                            zip.pipe(res);
-
-                            zip.append(privKey, { name: 'certs/privkey.pem' })
-                            .append(chain, { name: 'certs/fullchain.pem' })
-                            .finalize();
-                        }
-                    });
-                }).catch(err => {
-                    if (err.type && err.type === 'NOT_FOUND') {
-                        generateCert(username).then(certData => {
-                            setTimeout(() => {
-                                createRecords(certData.CertificateArn).then(() => {
-                                    updateUserCert(username, certData.CertificateArn).then(() => {
-                                        res.writeHead(200, {
-                                            'Content-Type': 'text/plain'
-                                        });
-                                        res.end('you want to get your cert');
-                                        const params = {
-                                            CertificateArn: certArn
-                                        };
-
-                                        const acm = new AWS.ACM({region: config.aws.region});
-                                        acm.getCertificate(params, (err, data) => {
-                                            if (err) {
-                                                res.writeHead(500);
-                                                res.end('error getting cert');
-                                            } else {
-                                                const privKey = data.Certificate;
-                                                const chain = data.CertificateChain; 
-                                            }
-
-                                        });
-                                    });
-                                });
-                            }, 5000);
-                        });
-                    }
-                });
+//                getCertArn(authToken).then((certArn) => {
+//                    const params = {
+//                        CertificateArn: certArn
+//                    };
+//
+//                    const acm = new AWS.ACM({region: config.aws.region});
+//                    acm.getCertificate(params, (err, data) => {
+//                        if (err) {
+//                            res.writeHead(500);
+//                            res.end('error getting cert');
+//                        } else {
+//                            const privKey = data.Certificate;
+//                            const chain = data.CertificateChain; 
+//                            
+//                            const Archiver = require('archiver');
+//                            
+//                            res.writeHead(200, {
+//                                'Content-Type': 'application/zip',
+//                                'Content-Disposition': 'attachment; filename=certs.zip'
+//                            });
+//
+//                            const zip = Archiver('zip');
+//
+//                            zip.pipe(res);
+//
+//                            zip.append(privKey, { name: 'certs/privkey.pem' })
+//                            .append(chain, { name: 'certs/fullchain.pem' })
+//                            .finalize();
+//                        }
+//                    });
+//                }).catch(err => {
+//                    if (err.type && err.type === 'NOT_FOUND') {
+//                        generateCert(username).then(certData => {
+//                            setTimeout(() => {
+//                                createRecords(certData.CertificateArn).then(() => {
+//                                    updateUserCert(username, certData.CertificateArn).then(() => {
+//                                        res.writeHead(200, {
+//                                            'Content-Type': 'text/plain'
+//                                        });
+//                                        res.end('you want to get your cert');
+//                                        const params = {
+//                                            CertificateArn: certArn
+//                                        };
+//
+//                                        const acm = new AWS.ACM({region: config.aws.region});
+//                                        acm.getCertificate(params, (err, data) => {
+//                                            if (err) {
+//                                                res.writeHead(500);
+//                                                res.end('error getting cert');
+//                                            } else {
+//                                                const privKey = data.Certificate;
+//                                                const chain = data.CertificateChain; 
+//                                            }
+//
+//                                        });
+//                                    });
+//                                });
+//                            }, 5000);
+//                        });
+//                    }
+//                });
             }).catch(err => {
                 res.writeHead(400, {
                     'Content-Type': 'text/plain'
@@ -390,4 +450,43 @@ http.createServer((req, res) => {
     res.writeHead(301, {'Location': 'https://' + req.headers['host'] + req.url });
     res.end();
 }).listen(HTTP_PORT);
+
+const storeCert = (username, certPath) => new Promise((resolve, reject) => {
+	console.log("need to store cert for user " + username);
+    	const userHash = getUserHash(username);
+
+	const archiver = require('archiver');
+	const zipPath = `${config.TMP_DATA_DIR}/${userHash}_certs.gz`;
+	const outStream = fs.createWriteStream(zipPath);
+
+	console.log('writing to ' + zipPath);
+	outStream.on('close', () => {
+		console.log('stored! now i can upload to s3');
+		
+		fs.readFile(zipPath, (err, data) => {
+                
+			console.log('reading fileeee');
+		const s3 = new AWS.S3();
+		const certParams = {
+			Body: data,
+			Bucket: 'homegames-link',
+			Key: `${userHash}/cert-bundle.zip`
+		};
+
+			s3.putObject(certParams, (err, _data) => {
+				console.log("okay");
+				console.log(err);
+				console.log(data);
+				if (!err) {
+					resolve(_data)
+				}
+			});
+		});
+	});
+
+	const archive = archiver('zip');
+	archive.pipe(outStream);
+	archive.directory(certPath);
+	archive.finalize();
+});
 
