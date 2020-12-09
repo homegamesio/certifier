@@ -325,22 +325,91 @@ const getCert = (username) => new Promise((resolve, reject) => {
 	});
 });
 
+const getReqBody = (req, cb) => {
+    let _body = '';
+    req.on('data', chunk => {
+        _body += chunk.toString();
+    });
+
+    req.on('end', () => {
+        cb && cb(_body);
+    });
+};
+
+const getCertDir = (username) => new Promise((resolve, reject) => {
+	const userHash = getUserHash(username);
+	console.log("hello");
+	console.log(userHash);
+	fs.readFile(`/etc/letsencrypt/renewal/${userHash}.homegames.link.conf`, (err, data) => {
+		console.log('read fileddd');
+		console.log(err);
+		console.log(data);
+		const cmd = 'certbot';
+		const args = ['certificates', '--cert-name', `${userHash}.homegames.link`];
+		    const child = spawn(cmd, args);
+    child.stdout.on('data', (chunk) => {
+	    console.log("GOT DATADSDFSDF");
+	    console.log(chunk.toString());
+	const expirationRegex = new RegExp('Expiry Date: (.*)\n');
+	    if (chunk.toString().match(expirationRegex)) {
+		console.log("EXPIRATION DATA");
+		    console.log(chunk.toString().match(expirationRegex)[1]);
+	    }
+
+    });
+    child.stderr.on('data', (_chunk) => {
+	    const chunk = _chunk.toString();
+			console.log('error!!!');
+			console.log(_chunk.toString());
+		});
+
+    child.on('error', (err) => {
+			console.log('error');
+			console.log(err);
+			console.log(err.toString());
+		});
+
+		resolve();
+	});
+});
+
 const server = https.createServer(options, (req, res) => {
-    if (req.method === 'GET') {
-        if (req.url === '/verify') {
+	if (req.method === 'POST') {
+	    if (req.url === '/verify') {
             verifyAuthToken(req).then(() => {
+		    getReqBody(req, (_reqData) => {
+			    const reqData = JSON.parse(_reqData);
+                const username = req.headers['hg-username'];
                 res.writeHead(200, {
-                    'Content-Type': 'text/plain'
+                    'Content-Type': 'application/json'
                 });
 
-                res.end('want to check your existing cert');
+	        	getCert(username).then((certData) => {
+				console.log("GOT CERT DATA");
+				const checksum = crypto.createHash('md5').update(certData).digest('hex');
+				console.log('checkef');
+				console.log(checksum);
+		    const payload = {
+			success: checksum === reqData.checksum
+		    };
+
+				getCertDir(username).then(() => {
+					console.log('hello i need to put the cert data there,');
+                res.end(JSON.stringify(payload));
+				});
+
+			});
+		    });
             }).catch(err => {
                 res.writeHead(400, {
                     'Content-Type': 'text/plain'
                 });
                 res.end('Could not validate auth header');
             });
-        } else if (req.url === '/get-certs') {
+	    }
+
+	} else if (req.method === 'GET') {
+        if (req.url === '/get-certs') {
 		console.log('sdfsdf');
             verifyAuthToken(req).then(() => {
 
