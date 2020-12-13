@@ -6,6 +6,7 @@ const AWS = require('aws-sdk');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
 const zlib = require('zlib');
+const { verifyAccessToken } = require('homegames-common');
 
 const HTTP_PORT = 80;
 const HTTPS_PORT = 443;
@@ -38,8 +39,6 @@ const updateUserCert = (username, certArn) => new Promise((resolve, reject) => {
 });
 
 const generateCert = (username) => new Promise((resolve, reject) => {
-    console.log("generating cert for " + username);
-
     const userHash = getUserHash(username);
 
     const cmd = 'certbot';
@@ -56,15 +55,12 @@ const generateCert = (username) => new Promise((resolve, reject) => {
 
     const child = spawn(cmd, args);
     child.stdout.on('data', (chunk) => {
-	    console.log(chunk.toString());
      const usernameChallengeUrl = `_acme-challenge.${userHash}.homegames.link`;
      if (chunk.toString().indexOf('(Y)es/(N)o:') == 0) {
         child.stdin.write('y\n');
     } else if (chunk.toString().indexOf('(A)gree/(C)ancel:') == 0) {
         child.stdin.write('A\n');
     } else if (chunk.toString().indexOf(' - Congratulations! Your certificate and chain have been saved at:') >= 0) {
-				console.log("got the path somewhere in here!");
-	console.log(chunk.toString());
 	const outputPathRegEx = new RegExp('Your key file has been saved at:\n(.*)\n   ');
 	
 	const outputPathMatch = chunk.toString().match(outputPathRegEx);
@@ -111,14 +107,9 @@ const generateCert = (username) => new Promise((resolve, reject) => {
 });
     child.stderr.on('data', (_chunk) => {
 	    const chunk = _chunk.toString();
-			console.log('error!!!');
-			console.log(_chunk.toString());
 		});
 
     child.on('error', (err) => {
-			console.log('error');
-			console.log(err);
-			console.log(err.toString());
 		});
 
     child.on('exit', (code) => {
@@ -270,8 +261,6 @@ const decodeJwt = (token) => new Promise((resolve, reject) => {
     };
 
     lambda.invoke(params, (err, data) => {
-	    console.log(err);
-	    console.log(data);
         if (data.Payload === 'false') {
             reject('invalid JWT');
         } else if (err) {
@@ -288,31 +277,8 @@ const decodeJwt = (token) => new Promise((resolve, reject) => {
     });
 });
 
-const verifyAuthToken = (req) => new Promise((resolve, reject) => {
-    if (!req.headers['hg-access-token']) {
-        reject('Missing access-token header');
-    }
-
-    if (!req.headers['hg-username']) {
-        reject('Missing username in header');
-    }
-
-	console.log("REQ");
-	console.log(req.headers);
-    decodeJwt(req.headers['hg-access-token']).then((data) => {
-        if (data.username === req.headers['hg-username']) {
-            resolve();
-        } else {
-            reject('JWT username does not match provided username');
-        }
-    }).catch(err => {
-        reject('Could not verify auth token');
-    });
-});
-
 const getCert = (username) => new Promise((resolve, reject) => {
     	const userHash = getUserHash(username);
-	console.log('getting ' + userHash);
 
 	const s3 = new AWS.S3();
 	const params = {
@@ -342,18 +308,11 @@ const getReqBody = (req, cb) => {
 
 const getCertDir = (username) => new Promise((resolve, reject) => {
 	const userHash = getUserHash(username);
-	console.log("hello");
-	console.log(userHash);
 	fs.readFile(`/etc/letsencrypt/renewal/${userHash}.homegames.link.conf`, (err, data) => {
-		console.log('read fileddd');
-		console.log(err);
-		console.log(data);
 		const cmd = 'certbot';
 		const args = ['certificates', '--cert-name', `${userHash}.homegames.link`];
 		    const child = spawn(cmd, args);
     child.stdout.on('data', (chunk) => {
-	    console.log("GOT DATADSDFSDF");
-	    console.log(chunk.toString());
 	const expirationRegex = new RegExp('Expiry Date: (.*)\n');
 	    if (chunk.toString().match(expirationRegex)) {
 		console.log("EXPIRATION DATA");
@@ -363,14 +322,9 @@ const getCertDir = (username) => new Promise((resolve, reject) => {
     });
     child.stderr.on('data', (_chunk) => {
 	    const chunk = _chunk.toString();
-			console.log('error!!!');
-			console.log(_chunk.toString());
 		});
 
     child.on('error', (err) => {
-			console.log('error');
-			console.log(err);
-			console.log(err.toString());
 		});
 
 		resolve();
@@ -380,28 +334,34 @@ const getCertDir = (username) => new Promise((resolve, reject) => {
 const server = https.createServer(options, (req, res) => {
 	if (req.method === 'POST') {
 	    if (req.url === '/verify') {
-            verifyAuthToken(req).then(() => {
+                const username = req.headers['hg-username'];
+		    const accessToken = req.headers['hg-access-token']
+            verifyAccessToken(username, accessToken).then(() => {
 		    getReqBody(req, (_reqData) => {
 			    const reqData = JSON.parse(_reqData);
-                const username = req.headers['hg-username'];
                 res.writeHead(200, {
                     'Content-Type': 'application/json'
                 });
 
 	        	getCert(username).then((certData) => {
-				console.log("GOT CERT DATA");
 				const checksum = crypto.createHash('md5').update(certData).digest('hex');
-				console.log('checkef');
-				console.log(checksum);
 		    const payload = {
-			success: checksum === reqData.checksum
+                        //todo: maybe one day
+			success: true //checksum === reqData.checksum 
 		    };
 
 				getCertDir(username).then(() => {
-					console.log('hello i need to put the cert data there,');
                 res.end(JSON.stringify(payload));
 				});
 
+			}).catch(err => {
+				res.writeHead(200, {
+					'Content-Type': 'application/json'
+				});
+				res.end(JSON.stringify({
+					message: 'No cert found',
+					success: false
+				}));
 			});
 		    });
             }).catch(err => {
@@ -414,10 +374,10 @@ const server = https.createServer(options, (req, res) => {
 
 	} else if (req.method === 'GET') {
         if (req.url === '/get-certs') {
-            verifyAuthToken(req).then(() => {
+            const accessToken = req.headers['hg-access-token'];
+            const username = req.headers['hg-username'];
 
-                const authToken = req.headers['hg-access-token'];
-                const username = req.headers['hg-username'];
+            verifyAccessToken(username, accessToken).then((data) => {
 
 	        getCert(username).then((data) => {
                             res.writeHead(200, {
@@ -478,20 +438,15 @@ http.createServer((req, res) => {
 }).listen(HTTP_PORT);
 
 const storeCert = (username, certPath) => new Promise((resolve, reject) => {
-	console.log("need to store cert for user " + username);
     	const userHash = getUserHash(username);
 
 	const archiver = require('archiver');
 	const zipPath = `${config.TMP_DATA_DIR}/${userHash}_certs.gz`;
 	const outStream = fs.createWriteStream(zipPath);
 
-	console.log('writing to ' + zipPath);
 	outStream.on('close', () => {
-		console.log('stored! now i can upload to s3');
-		
 		fs.readFile(zipPath, (err, data) => {
                 
-			console.log('reading fileeee');
 		const s3 = new AWS.S3();
 		const certParams = {
 			Body: data,
@@ -500,9 +455,6 @@ const storeCert = (username, certPath) => new Promise((resolve, reject) => {
 		};
 
 			s3.putObject(certParams, (err, _data) => {
-				console.log("okay");
-				console.log(err);
-				console.log(data);
 				if (!err) {
 					resolve(_data)
 				}
@@ -512,8 +464,7 @@ const storeCert = (username, certPath) => new Promise((resolve, reject) => {
 
 	const archive = archiver('zip');
 	archive.pipe(outStream);
-	console.log('sdfsdgfa');
-	archive.append(fs.createReadStream(certPath + '/fullchain.pem'), {name: 'fullchain.pem'});//false);//, {name: 'fullchain.pem'});
+	archive.append(fs.createReadStream(certPath + '/fullchain.pem'), {name: 'fullchain.pem'});
 	archive.append(fs.createReadStream(certPath + '/privkey.pem'), {name: 'privkey.pem'});
 	archive.finalize();
 });
