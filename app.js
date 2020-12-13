@@ -74,6 +74,8 @@ const generateCert = (username) => new Promise((resolve, reject) => {
 	    resolve(outputPath);
 	}
 
+    } else if (chunk.toString().indexOf('You have an existing certificate that has exactly the same domains') >= 0) {
+        child.stdin.write('2\n');    
     } else if (chunk.toString().indexOf(usernameChallengeUrl) >= 0) {
         const dnsRegEx = new RegExp('\n\n(.*)\n\n');
 
@@ -287,7 +289,7 @@ const decodeJwt = (token) => new Promise((resolve, reject) => {
 });
 
 const verifyAuthToken = (req) => new Promise((resolve, reject) => {
-    if (!req.headers['access-token']) {
+    if (!req.headers['hg-access-token']) {
         reject('Missing access-token header');
     }
 
@@ -295,7 +297,9 @@ const verifyAuthToken = (req) => new Promise((resolve, reject) => {
         reject('Missing username in header');
     }
 
-    decodeJwt(req.headers['access-token']).then((data) => {
+	console.log("REQ");
+	console.log(req.headers);
+    decodeJwt(req.headers['hg-access-token']).then((data) => {
         if (data.username === req.headers['hg-username']) {
             resolve();
         } else {
@@ -410,10 +414,9 @@ const server = https.createServer(options, (req, res) => {
 
 	} else if (req.method === 'GET') {
         if (req.url === '/get-certs') {
-		console.log('sdfsdf');
             verifyAuthToken(req).then(() => {
 
-                const authToken = req.headers['access-token'];
+                const authToken = req.headers['hg-access-token'];
                 const username = req.headers['hg-username'];
 
 	        getCert(username).then((data) => {
@@ -423,26 +426,19 @@ const server = https.createServer(options, (req, res) => {
                             });
 		
 
-			console.log('plau');
 			res.end(data);
 
 		}).catch((err) => {
-		    console.log('need to create cert for ' + username);	
 		    
 		    generateCert(username).then(certPath => {
-			console.log('created cert! at ' + certPath);
 			
 			storeCert(username, certPath).then((certData) => {
-				console.log("STORED CERTS AT THIS HOLE SHNIT");
-				console.log(certData);
 	        getCert(username).then((data) => {
                             res.writeHead(200, {
                                 'Content-Type': 'application/zip',
                                 'Content-Disposition': 'attachment; filename=cert-bundle.zip'
                             });
-		
 
-			console.log('plau2');
 			res.end(data);
 
 		});
@@ -517,6 +513,7 @@ const storeCert = (username, certPath) => new Promise((resolve, reject) => {
 	const archive = archiver('zip');
 	archive.pipe(outStream);
 	console.log('sdfsdgfa');
-	archive.directory(certPath, false);
+	archive.append(fs.createReadStream(certPath + '/fullchain.pem'), {name: 'fullchain.pem'});//false);//, {name: 'fullchain.pem'});
+	archive.append(fs.createReadStream(certPath + '/privkey.pem'), {name: 'privkey.pem'});
 	archive.finalize();
 });
