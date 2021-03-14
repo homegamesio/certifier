@@ -1,2 +1,2 @@
 # certifier
-Create &amp; retrieve certificates
+Create & retrieve certificates

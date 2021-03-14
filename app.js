@@ -1,13 +1,11 @@
 const https = require('https');
 const http = require('http');
-const config = require('./config');
 const AWS = require('aws-sdk');
 
 const HTTP_PORT = 80;
-const HTTPS_PORT = 443;
 
 const updateUserCert = (username, certArn) => new Promise((resolve, reject) => {
-    const provider = new AWS.CognitoIdentityServiceProvider({region: config.aws.region});
+    const provider = new AWS.CognitoIdentityServiceProvider({region: process.env.AWS_REGION});
     const params = {
         UserAttributes: [
             {
@@ -15,7 +13,7 @@ const updateUserCert = (username, certArn) => new Promise((resolve, reject) => {
                 Value: certArn
             }
         ],
-        UserPoolId: config.aws.cognito.USER_POOL_ID,
+        UserPoolId: process.env.AWS_COGNITO_USER_POOL_ID,
         Username: username
     };
     
@@ -32,7 +30,7 @@ const createRecords = (arn) => new Promise((resolve, reject) => {
         CertificateArn: arn
     };
     
-    const acm = new AWS.ACM({region: config.aws.region});
+    const acm = new AWS.ACM({region: process.env.AWS_REGION});
     
     acm.describeCertificate(params, (err, data) => {
         console.log(err);
@@ -62,7 +60,7 @@ const createRecords = (arn) => new Promise((resolve, reject) => {
                     }
                 ]
             },
-            HostedZoneId: config.aws.route53.hostedZoneId
+            HostedZoneId: process.env.AWS_ROUTE_53_HOSTED_ZONE_ID
         };
 
         const route53 = new AWS.Route53();
@@ -95,7 +93,7 @@ const createRecords = (arn) => new Promise((resolve, reject) => {
                                 }
                             ]
                         },
-                        HostedZoneId: config.aws.route53.hostedZoneId
+                        HostedZoneId: process.env.AWS_ROUTE_53_HOSTED_ZONE_ID
                     };
                     
                     route53.changeResourceRecordSets(deleteDnsParams, (err, data) => {
@@ -128,12 +126,11 @@ const getCertArn = (accessToken) => new Promise((resolve, reject) => {
         AccessToken: accessToken
     };
 
-    const provider = new AWS.CognitoIdentityServiceProvider({region: config.aws.region});
-
+    const provider = new AWS.CognitoIdentityServiceProvider({region: process.env.AWS_REGION});
     decodeJwt(accessToken).then(decoded => {
         provider.adminGetUser({
             Username: decoded.username,
-            UserPoolId: config.aws.cognito.USER_POOL_ID
+            UserPoolId: process.env.AWS_COGNITO_USER_POOL_ID
         }, (err, data) => {
 
             const certArn = data.UserAttributes.find(thing => thing.Name === 'custom:certArn');
@@ -157,7 +154,7 @@ const generateCert = (username) => new Promise((resolve, reject) => {
         ValidationMethod: 'DNS'
     };
 
-    const acm = new AWS.ACM({region: config.aws.region});
+    const acm = new AWS.ACM({region: process.env.AWS_REGION});
 
     acm.requestCertificate(params, (err, data) => {
         console.log(data);
@@ -167,18 +164,18 @@ const generateCert = (username) => new Promise((resolve, reject) => {
 
 const decodeJwt = (token) => new Promise((resolve, reject) => {
     const lambda = new AWS.Lambda({
-        region: config.aws.region
+        region: process.env.AWS_REGION
     });
 
     const params = {
-        FunctionName: config.aws.decodeLambdaName,
+        FunctionName: process.env.AWS_DECODE_LAMBDA_NAME,
         Payload: JSON.stringify({
             token
         })
     };
 
     lambda.invoke(params, (err, data) => {
-        if (data.Payload === 'false') {
+        if (data && data.Payload === 'false') {
             reject('invalid JWT');
         } else if (err) {
             reject(err);
@@ -229,6 +226,11 @@ const server = http.createServer((req, res) => {
                 });
                 res.end('Could not validate auth header');
             });
+        } else if (req.url === '/health') {
+            res.writeHead(200, {
+                'Content-Type': 'text/plain'
+            });
+            res.end('ok');
         } else if (req.url === '/') {
 
             verifyAuthToken(req).then(() => {
@@ -241,7 +243,7 @@ const server = http.createServer((req, res) => {
                         CertificateArn: certArn
                     };
 
-                    const acm = new AWS.ACM({region: config.aws.region});
+                    const acm = new AWS.ACM({region: process.env.AWS_REGION});
                     acm.getCertificate(params, (err, data) => {
                         if (err) {
                             res.writeHead(500);
@@ -281,7 +283,7 @@ const server = http.createServer((req, res) => {
                                             CertificateArn: certArn
                                         };
 
-                                        const acm = new AWS.ACM({region: config.aws.region});
+                                        const acm = new AWS.ACM({region: process.env.AWS_REGION});
                                         acm.getCertificate(params, (err, data) => {
                                             if (err) {
                                                 res.writeHead(500);
@@ -326,8 +328,3 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(80);
-
-//http.createServer((req, res) => {
-//    res.writeHead(301, {'Location': 'https://' + req.headers['host'] + req.url });
-//    res.end();
-//}).listen(HTTP_PORT);
