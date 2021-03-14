@@ -1,6 +1,4 @@
-const https = require('https');
 const http = require('http');
-const config = require('./config');
 const fs = require('fs');
 const AWS = require('aws-sdk');
 const crypto = require('crypto');
@@ -9,19 +7,13 @@ const zlib = require('zlib');
 const { verifyAccessToken } = require('homegames-common');
 
 const HTTP_PORT = 80;
-const HTTPS_PORT = 443;
-
-const options = {
-	key: fs.readFileSync(config.TLS_KEY_PATH),
-	cert: fs.readFileSync(config.TLS_CERT_PATH)
-}
 
 const getUserHash = (username) => {
 	return crypto.createHash('md5').update(username).digest('hex');
 };
 
 const updateUserCert = (username, certArn) => new Promise((resolve, reject) => {
-    const provider = new AWS.CognitoIdentityServiceProvider({region: config.aws.region});
+    const provider = new AWS.CognitoIdentityServiceProvider({region: process.env.AWS_REGION});
     const params = {
         UserAttributes: [
         {
@@ -29,7 +21,7 @@ const updateUserCert = (username, certArn) => new Promise((resolve, reject) => {
             Value: certArn
         }
         ],
-        UserPoolId: config.aws.cognito.USER_POOL_ID,
+        UserPoolId: process.env.AWS_COGNITO_USER_POOL_ID,
         Username: username
     };
     
@@ -45,7 +37,7 @@ const generateCert = (username) => new Promise((resolve, reject) => {
 
     const baseArgs = ['certonly'];
 
-    if (config.ENVIRONMENT !== 'production') {
+    if (process.env.ENVIRONMENT !== 'production') {
 	baseArgs.push('--dry-run');
     }
 
@@ -140,7 +132,7 @@ const deleteDNSRecord = (name) => new Promise((resolve, reject) => {
 }
 ]
 },
-HostedZoneId: config.aws.route53.hostedZoneId
+HostedZoneId: process.env.AWS_ROUTE_53_HOSTED_ZONE_ID
 };
 
 const route53 = new AWS.Route53();
@@ -162,7 +154,7 @@ route53.changeResourceRecordSets(deleteDnsParams, (err, data) => {
 
 const getDNSRecord = (url) => new Promise((resolve, reject) => {
     const params = {
-        HostedZoneId: config.aws.route53.hostedZoneId,
+        HostedZoneId: process.env.AWS_ROUTE_53_HOSTED_ZONE_ID,
         StartRecordName: url,
         StartRecordType: 'TXT'
     };
@@ -199,7 +191,7 @@ const createDNSRecord = (url, value) => new Promise((resolve, reject) => {
             }
             ]
         },
-        HostedZoneId: config.aws.route53.hostedZoneId
+        HostedZoneId: process.env.AWS_ROUTE_53_HOSTED_ZONE_ID
     };
 
     const route53 = new AWS.Route53();
@@ -227,12 +219,12 @@ const getCertArn = (accessToken) => new Promise((resolve, reject) => {
         AccessToken: accessToken
     };
 
-    const provider = new AWS.CognitoIdentityServiceProvider({region: config.aws.region});
+    const provider = new AWS.CognitoIdentityServiceProvider({region: process.env.AWS_REGION});
 
     decodeJwt(accessToken).then(decoded => {
         provider.adminGetUser({
             Username: decoded.username,
-            UserPoolId: config.aws.cognito.USER_POOL_ID
+            UserPoolId: process.env.AWS_COGNITO_USER_POOL_ID
         }, (err, data) => {
 
             const certArn = data.UserAttributes.find(thing => thing.Name === 'custom:certArn');
@@ -250,11 +242,11 @@ const getCertArn = (accessToken) => new Promise((resolve, reject) => {
 
 const decodeJwt = (token) => new Promise((resolve, reject) => {
     const lambda = new AWS.Lambda({
-        region: config.aws.region
+        region: process.env.AWS_REGION
     });
 
     const params = {
-        FunctionName: config.aws.decodeLambdaName,
+        FunctionName: process.env.AWS_DECODE_LAMBDA_NAME,
         Payload: JSON.stringify({
             token
         })
@@ -282,8 +274,8 @@ const getCert = (username) => new Promise((resolve, reject) => {
 
 	const s3 = new AWS.S3();
 	const params = {
-		Bucket: config.aws.s3.certBucket,
-		Key: `${config.aws.s3.certPrefix}${userHash}/cert-bundle.zip`
+		Bucket: process.env.AWS_S3_CERT_BUCKET,
+		Key: `${process.env.AWS_S3_CERT_PREFIX}${userHash}/cert-bundle.zip`
 	};
 
 	s3.getObject(params, (err, data) => {
@@ -331,7 +323,7 @@ const getCertDir = (username) => new Promise((resolve, reject) => {
 	});
 });
 
-const server = https.createServer(options, (req, res) => {
+const server = http.createServer((req, res) => {
 	if (req.method === 'POST') {
 	    if (req.url === '/verify') {
                 const username = req.headers['hg-username'];
@@ -415,6 +407,12 @@ const server = https.createServer(options, (req, res) => {
                 res.end('Could not validate auth header');
             });
 
+        } else if (req.url === '/health') {
+            res.writeHead(200, {
+                'Content-Type': 'text/plain'
+            });
+            res.end('ok');
+
         } else {
             res.writeHead(404, {
                 'Content-Type': 'text/plain'
@@ -430,18 +428,13 @@ const server = https.createServer(options, (req, res) => {
 
 });
 
-server.listen(HTTPS_PORT);
-
-http.createServer((req, res) => {
-    res.writeHead(301, {'Location': 'https://' + req.headers['host'] + req.url });
-    res.end();
-}).listen(HTTP_PORT);
+server.listen(HTTP_PORT);
 
 const storeCert = (username, certPath) => new Promise((resolve, reject) => {
     	const userHash = getUserHash(username);
 
 	const archiver = require('archiver');
-	const zipPath = `${config.TMP_DATA_DIR}/${userHash}_certs.gz`;
+	const zipPath = `${process.env.TMP_DATA_DIR}/${userHash}_certs.gz`;
 	const outStream = fs.createWriteStream(zipPath);
 
 	outStream.on('close', () => {
@@ -451,7 +444,7 @@ const storeCert = (username, certPath) => new Promise((resolve, reject) => {
 		const certParams = {
 			Body: data,
 			Bucket: 'homegames-link',
-			Key: `${config.aws.s3.certPrefix}${userHash}/cert-bundle.zip`
+			Key: `${process.env.AWS_S3_CERT_PREFIX}${userHash}/cert-bundle.zip`
 		};
 
 			s3.putObject(certParams, (err, _data) => {
