@@ -8,9 +8,12 @@ const { verifyAccessToken } = require('homegames-common');
 
 const HTTP_PORT = 80;
 
-const getUserHash = (username) => {
-	return crypto.createHash('md5').update(username).digest('hex');
-};
+const getUserHash = (username) => new Promise((resolve, reject) => {
+    if (!username) {
+        reject('missing username');
+    }
+	resolve(crypto.createHash('md5').update(username).digest('hex'));
+});
 
 const updateUserCert = (username, certArn) => new Promise((resolve, reject) => {
     const provider = new AWS.CognitoIdentityServiceProvider({region: process.env.AWS_REGION});
@@ -31,82 +34,88 @@ const updateUserCert = (username, certArn) => new Promise((resolve, reject) => {
 });
 
 const generateCert = (username) => new Promise((resolve, reject) => {
-    const userHash = getUserHash(username);
+    getUserHash(username).then(userHash => {
 
-    const cmd = 'certbot';
-
-    const baseArgs = ['certonly'];
-
-    if (process.env.ENVIRONMENT !== 'production') {
-	baseArgs.push('--dry-run');
-    }
-
-    const additionalArgs = ['--manual', '--preferred-challenges=dns', '-d *.' + userHash + '.homegames.link', '--email=robot@homegamesio'];
-
-    const args = [baseArgs, additionalArgs].flat();
-
-    const child = spawn(cmd, args);
-    child.stdout.on('data', (chunk) => {
-     const usernameChallengeUrl = `_acme-challenge.${userHash}.homegames.link`;
-     if (chunk.toString().indexOf('(Y)es/(N)o:') == 0) {
-        child.stdin.write('y\n');
-    } else if (chunk.toString().indexOf('(A)gree/(C)ancel:') == 0) {
-        child.stdin.write('A\n');
-    } else if (chunk.toString().indexOf(' - Congratulations! Your certificate and chain have been saved at:') >= 0) {
-	const outputPathRegEx = new RegExp('Your key file has been saved at:\n(.*)\n   ');
-	
-	const outputPathMatch = chunk.toString().match(outputPathRegEx);
-	
-	if (outputPathMatch) { 
-	    const outputPath = outputPathMatch[1].trim().split('/').filter(e => !e.endsWith('.pem')).join('/');;
-	    resolve(outputPath);
-	}
-
-    } else if (chunk.toString().indexOf('You have an existing certificate that has exactly the same domains') >= 0) {
-        child.stdin.write('2\n');    
-    } else if (chunk.toString().indexOf(usernameChallengeUrl) >= 0) {
-        const dnsRegEx = new RegExp('\n\n(.*)\n\n');
-
-        const dnsMatch = chunk.toString().match(dnsRegEx);
-        if (dnsMatch) {
-           const dnsChallenge = dnsMatch[1];
-	   console.log('creating new DNS record for user.')
-           createDNSRecord(usernameChallengeUrl, dnsChallenge).then(() => {
-              child.stdin.write('\n');
-              console.log('created. now deleting');
-              deleteDNSRecord(usernameChallengeUrl).then(() => {
-		  console.log('deleted record!');
-              });
-
-          }).catch(err => {
-              if (err.toString().indexOf('but it already exists') >= 0) {
-		  console.log('already has a dns record. deleting it.');
-                  deleteDNSRecord(usernameChallengeUrl).then(() => {
-	              console.log('deleted that. now need to create one');
-           	      createDNSRecord(usernameChallengeUrl, dnsChallenge).then(() => {
-                          child.stdin.write('\n');
-                          console.log('created2. now deleting');
-                          deleteDNSRecord(usernameChallengeUrl).then(() => {
-             		      console.log('deleted2 record!');
-				  resolve('/would/be/path');
-                          });
-                      });
-                  });
+        const cmd = 'certbot';
+    
+        const baseArgs = ['certonly'];
+    
+        if (process.env.ENVIRONMENT !== 'production') {
+    	baseArgs.push('--dry-run');
+        }
+    
+        const additionalArgs = ['--manual', '--preferred-challenges=dns', '-d *.' + userHash + '.homegames.link', '--email=robot@homegamesio'];
+    
+        const args = [baseArgs, additionalArgs].flat();
+    
+        const child = spawn(cmd, args);
+        child.stdout.on('data', (chunk) => {
+           const usernameChallengeUrl = `_acme-challenge.${userHash}.homegames.link`;
+           if (chunk.toString().indexOf('(Y)es/(N)o:') == 0) {
+              child.stdin.write('y\n');
+          } else if (chunk.toString().indexOf('(A)gree/(C)ancel:') == 0) {
+              child.stdin.write('A\n');
+          } else if (chunk.toString().indexOf(' - Congratulations! Your certificate and chain have been saved at:') >= 0) {
+              const outputPathRegEx = new RegExp('Your key file has been saved at:\n(.*)\n   ');
+              
+              const outputPathMatch = chunk.toString().match(outputPathRegEx);
+              
+              if (outputPathMatch) { 
+                  const outputPath = outputPathMatch[1].trim().split('/').filter(e => !e.endsWith('.pem')).join('/');;
+                  resolve(outputPath);
               }
-          });
-      }
-  }
-});
-    child.stderr.on('data', (_chunk) => {
-	    const chunk = _chunk.toString();
-		});
-
-    child.on('error', (err) => {
-		});
-
-    child.on('exit', (code) => {
-     console.log('exited with code ' + code);
- });
+    
+          } else if (chunk.toString().indexOf('You have an existing certificate that has exactly the same domains') >= 0) {
+              child.stdin.write('2\n');    
+          } else if (chunk.toString().indexOf(usernameChallengeUrl) >= 0) {
+              const dnsRegEx = new RegExp('\n\n(.*)\n\n');
+    
+              const dnsMatch = chunk.toString().match(dnsRegEx);
+              if (dnsMatch) {
+                 const dnsChallenge = dnsMatch[1];
+                 console.log('creating new DNS record for user.')
+                 createDNSRecord(usernameChallengeUrl, dnsChallenge).then(() => {
+                    child.stdin.write('\n');
+                    console.log('created. now deleting');
+                    deleteDNSRecord(usernameChallengeUrl).then(() => {
+              	  console.log('deleted record!');
+                    });
+    
+                }).catch(err => {
+                    if (err.toString().indexOf('but it already exists') >= 0) {
+              	  console.log('already has a dns record. deleting it.');
+                        deleteDNSRecord(usernameChallengeUrl).then(() => {
+                            console.log('deleted that. now need to create one');
+                 	      createDNSRecord(usernameChallengeUrl, dnsChallenge).then(() => {
+                                child.stdin.write('\n');
+                                console.log('created2. now deleting');
+                                deleteDNSRecord(usernameChallengeUrl).then(() => {
+                   		      console.log('deleted2 record!');
+              			  resolve('/would/be/path');
+                                });
+                            });
+                        });
+                    }
+                });
+            }
+        }
+        });
+        child.stderr.on('data', (_chunk) => {
+    	    const chunk = _chunk.toString();
+    		});
+    
+        child.on('error', (err) => {
+    		});
+    
+        child.on('exit', (code) => {
+         console.log('exited with code ' + code);
+     });
+    }).catch(err => {
+        res.writeHead(400, {
+            'Content-Type': 'text/plain'
+        });
+        res.end('not ok');
+    });
 });
 
 const deleteDNSRecord = (name) => new Promise((resolve, reject) => {
@@ -366,11 +375,22 @@ const server = http.createServer((req, res) => {
 
 	} else if (req.method === 'GET') {
         if (req.url === '/get-certs') {
+            console.log('uhhhh');
             const accessToken = req.headers['hg-access-token'];
             const username = req.headers['hg-username'];
 
-            verifyAccessToken(username, accessToken).then((data) => {
+            if (!accessToken || !username) {
+                res.writeHead(400, {
+                    'Content-Type': 'text/plain'
+                });
+                res.end('need access token and username in header');
+            }
 
+            verifyAccessToken(username, accessToken).then((data) => {
+                console.log("ADNFJLDSF HERE");
+                console.log(data);
+
+                console.log('shdfljdshfdsf 22333');
 	        getCert(username).then((data) => {
                             res.writeHead(200, {
                                 'Content-Type': 'application/zip',
@@ -400,6 +420,7 @@ const server = http.createServer((req, res) => {
 		});
                 
             }).catch(err => {
+                console.log('shdfljdshfdsf');
                 res.writeHead(400, {
                     'Content-Type': 'text/plain'
                 });
